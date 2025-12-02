@@ -43,8 +43,13 @@ wss.on('connection', (clientWs, req) => {
 
   console.log('Establishing connection to target server...');
 
-  // Connect to target server (no special headers - auth via WebSocket messages)
-  const targetWs = new WebSocket(TARGET_WS_URL);
+  // Connect to target server with proper headers to mimic mobile app
+  const targetWs = new WebSocket(TARGET_WS_URL, {
+    headers: {
+      'User-Agent': 'WhiteMob/1.0.4.124',
+      'Origin': 'https://whiteless.hu',
+    },
+  });
 
   let targetConnected = false;
   const messageQueue = [];
