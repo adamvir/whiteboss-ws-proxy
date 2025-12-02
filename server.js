@@ -1,53 +1,50 @@
 // WebSocket Proxy Server for WhiteBoss
-// Adds Authorization header that browser WebSocket cannot send
+// Relays WebSocket messages to bypass Origin restrictions
 
 const WebSocket = require('ws');
 const http = require('http');
-const url = require('url');
 
 const TARGET_WS_URL = 'wss://wlserver.whiteless.hu';
 const PORT = process.env.PORT || 3001;
+
+// Allowed origins
+const ALLOWED_ORIGINS = [
+  'https://white-boss.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:3000',
+];
 
 // Create HTTP server
 const server = http.createServer((req, res) => {
   // Health check endpoint
   if (req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'ok' }));
+    res.end(JSON.stringify({ status: 'ok', target: TARGET_WS_URL }));
     return;
   }
 
-  // CORS headers for regular HTTP requests
-  res.writeHead(200, {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': '*',
-  });
-  res.end('WhiteBoss WebSocket Proxy');
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('WhiteBoss WebSocket Proxy - Connect via WebSocket');
 });
 
 // Create WebSocket server
 const wss = new WebSocket.Server({ server });
 
 wss.on('connection', (clientWs, req) => {
-  const parsedUrl = url.parse(req.url, true);
-  const token = parsedUrl.query.token;
+  const origin = req.headers.origin;
+  console.log(`Client connected from origin: ${origin}`);
 
-  if (!token) {
-    console.log('Connection rejected: missing token');
-    clientWs.close(4001, 'Missing token parameter');
-    return;
-  }
+  // Optional: Check origin (comment out for testing)
+  // if (!ALLOWED_ORIGINS.includes(origin)) {
+  //   console.log('Connection rejected: unauthorized origin');
+  //   clientWs.close(4003, 'Unauthorized origin');
+  //   return;
+  // }
 
-  console.log('Client connected, establishing connection to target server...');
+  console.log('Establishing connection to target server...');
 
-  // Connect to target server with Authorization header
-  const targetWs = new WebSocket(TARGET_WS_URL, {
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'User-Agent': 'WhiteWeb/1.0.0',
-    },
-  });
+  // Connect to target server (no special headers - auth via WebSocket messages)
+  const targetWs = new WebSocket(TARGET_WS_URL);
 
   let targetConnected = false;
   const messageQueue = [];
@@ -59,6 +56,7 @@ wss.on('connection', (clientWs, req) => {
     // Send any queued messages
     while (messageQueue.length > 0) {
       const msg = messageQueue.shift();
+      console.log('Sending queued message to target');
       targetWs.send(msg);
     }
   });
@@ -66,14 +64,25 @@ wss.on('connection', (clientWs, req) => {
   targetWs.on('message', (data) => {
     // Forward message from target to client
     if (clientWs.readyState === WebSocket.OPEN) {
-      clientWs.send(data);
+      // Convert Buffer to string if needed
+      const message = Buffer.isBuffer(data) ? data.toString() : data;
+      clientWs.send(message);
+
+      // Log event type for debugging
+      try {
+        const parsed = JSON.parse(message);
+        console.log(`Target -> Client: ${parsed.$TypeOfEvent || 'unknown'}`);
+      } catch {
+        console.log('Target -> Client: [non-JSON message]');
+      }
     }
   });
 
   targetWs.on('close', (code, reason) => {
-    console.log(`Target connection closed: ${code} - ${reason}`);
+    const reasonStr = reason ? reason.toString() : '';
+    console.log(`Target connection closed: ${code} - ${reasonStr}`);
     if (clientWs.readyState === WebSocket.OPEN) {
-      clientWs.close(code, reason);
+      clientWs.close(code, reasonStr);
     }
   });
 
@@ -86,18 +95,31 @@ wss.on('connection', (clientWs, req) => {
 
   // Handle messages from client
   clientWs.on('message', (data) => {
+    // Convert Buffer to string if needed
+    const message = Buffer.isBuffer(data) ? data.toString() : data;
+
+    // Log request type for debugging
+    try {
+      const parsed = JSON.parse(message);
+      console.log(`Client -> Target: ${parsed.$TypeOfRequest || 'unknown'}`);
+    } catch {
+      console.log('Client -> Target: [non-JSON message]');
+    }
+
     if (targetConnected && targetWs.readyState === WebSocket.OPEN) {
-      targetWs.send(data);
+      targetWs.send(message);
     } else {
       // Queue message until target is connected
-      messageQueue.push(data);
+      console.log('Target not ready, queuing message');
+      messageQueue.push(message);
     }
   });
 
   clientWs.on('close', (code, reason) => {
-    console.log(`Client connection closed: ${code} - ${reason}`);
+    const reasonStr = reason ? reason.toString() : '';
+    console.log(`Client connection closed: ${code} - ${reasonStr}`);
     if (targetWs.readyState === WebSocket.OPEN) {
-      targetWs.close(code, reason);
+      targetWs.close(code, reasonStr);
     }
   });
 
@@ -112,4 +134,5 @@ wss.on('connection', (clientWs, req) => {
 server.listen(PORT, () => {
   console.log(`WebSocket proxy server running on port ${PORT}`);
   console.log(`Proxying to ${TARGET_WS_URL}`);
+  console.log(`Allowed origins: ${ALLOWED_ORIGINS.join(', ')}`);
 });
